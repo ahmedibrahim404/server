@@ -37,6 +37,7 @@
 #include "set_var.h"
 #ifdef HAVE_SPATIAL
 #include <m_ctype.h>
+#include <stack>
 #include "opt_range.h"
 #include "item_geofunc.h"
 #include "item_create.h"
@@ -2061,6 +2062,104 @@ mem_error:
   DBUG_RETURN(str_result);
 }
 
+longlong Item_func_isvalid::val_int()
+{
+  DBUG_ENTER("Item_func_isvalid::val_int");
+
+  String tmp;
+  String *swkb= args[0]->val_str(&tmp);
+  Geometry_buffer buffer;
+  Geometry *g;
+
+  MBR mbr;
+  const char *c_end;
+
+  if ((args[0]->null_value || !(g = Geometry::construct(&buffer, swkb->ptr(), swkb->length())))) DBUG_RETURN(-1);
+
+  std::stack<Geometry*> geometries;
+  geometries.push(g);
+
+  while(geometries.size()){
+    Geometry* current = geometries.top();
+    geometries.pop();
+    auto type = current->get_class_info()->m_type_id;
+
+    // if one of those, it's always valid if it was constructed succesfully.
+    if(type == Geometry::wkb_point || type == Geometry::wkb_multipoint || type == Geometry::wkb_linestring || type == Geometry::wkb_multilinestring) continue;
+    else if(type == Geometry::wkb_multipolygon || type == Geometry::wkb_geometrycollection){
+      // extract & push each geometry alone to be processed about validity
+      uint32 num_on_geometries;
+      if(current->num_geometries(&num_on_geometries)) DBUG_RETURN(-1);
+
+      const uint32 len= 4 + WKB_HEADER_SIZE + POINT_DATA_SIZE + 1;
+      char s[len];
+
+      for (uint32 i=1; i <= num_on_geometries; i++)
+      {
+        // extract the i-th geometry
+        Geometry_buffer buff_temp;
+        Geometry *temp;
+        const char *pt_ptr= g->get_data_ptr()+ 4+WKB_HEADER_SIZE*i + POINT_DATA_SIZE*(i-1);
+
+        // First 4 bytes are handled already, make sure to create a Point
+        memset(s + 4, Geometry::wkb_point, 1);
+        if (current->no_data(pt_ptr, POINT_DATA_SIZE))
+          return -1;
+
+        memcpy(s + 5, current->get_data_ptr() + 5, 4);
+        memcpy(s + 4 + WKB_HEADER_SIZE, pt_ptr, POINT_DATA_SIZE);
+        s[len-1]= '\0';
+
+
+        temp= Geometry::construct(&buff_temp, s, len);
+        if(!temp) DBUG_RETURN(-1);
+        geometries.push(temp);
+      }
+
+    } else if(type == Geometry::wkb_polygon){
+      // TODO:: if polygon, check that it's simple (A valid polygon must be simple)
+
+      // if polygon, check that interiors are inside the exterior
+      uint32 srid= uint4korr(swkb->ptr());
+      swkb->set_charset(&my_charset_bin);
+      swkb->length(0);
+      if (swkb->reserve(SRID_SIZE, 512))
+        DBUG_RETURN(-1);
+      swkb->q_append(srid);
+      if(current->exterior_ring(swkb)) DBUG_RETURN(-1);
+
+      Geometry_buffer buffer;
+      Geometry *exteriorRing, *interiorRing;
+      MBR exterior_mbr, interior_mbr;
+
+      if (!(exteriorRing = Geometry::construct(&buffer, swkb->ptr(), swkb->length()))) DBUG_RETURN(-1);
+      if(exteriorRing->get_mbr(&exterior_mbr, &c_end)) DBUG_RETURN(-1);
+
+
+      for(uint32 i=1;;i++){
+
+          uint32 srid= uint4korr(swkb->ptr());
+          swkb->set_charset(&my_charset_bin);
+          swkb->length(0);
+          if (swkb->reserve(SRID_SIZE, 512))
+            DBUG_RETURN(-1);
+          swkb->q_append(srid);
+
+          if(current->interior_ring_n(i, swkb)) break;
+
+          if (!(interiorRing = Geometry::construct(&buffer, swkb->ptr(), swkb->length()))) DBUG_RETURN(-1);
+          if(interiorRing->get_mbr(&interior_mbr, &c_end)) DBUG_RETURN(-1);
+
+          if (exterior_mbr.contains(&interior_mbr)) continue;
+          else DBUG_RETURN(0);
+
+      }
+    }
+  }
+
+  // if no any validity problems, return true
+  DBUG_RETURN(Item_func_issimple::val_int());
+}
 
 longlong Item_func_isempty::val_int()
 {
@@ -3601,6 +3700,20 @@ protected:
   virtual ~Create_func_isempty() = default;
 };
 
+class Create_func_isvalid : public Create_func_arg1
+{
+public:
+  Item *create_1_arg(THD *thd, Item *arg1) override
+  {
+    return new (thd->mem_root) Item_func_isvalid(thd, arg1);
+  }
+
+  static Create_func_isvalid s_singleton;
+
+protected:
+  Create_func_isvalid() = default;
+  virtual ~Create_func_isvalid() = default;
+};
 
 class Create_func_issimple : public Create_func_arg1
 {
@@ -3883,6 +3996,7 @@ Create_func_intersection Create_func_intersection::s_singleton;
 Create_func_intersects Create_func_intersects::s_singleton;
 Create_func_isclosed Create_func_isclosed::s_singleton;
 Create_func_isempty Create_func_isempty::s_singleton;
+Create_func_isvalid Create_func_isvalid::s_singleton;
 Create_func_isring Create_func_isring::s_singleton;
 Create_func_issimple Create_func_issimple::s_singleton;
 Create_func_mbr_contains Create_func_mbr_contains::s_singleton;
@@ -3950,6 +4064,7 @@ static Native_func_registry func_array_geom[] =
   { { STRING_WITH_LEN("INTERSECTS") }, GEOM_BUILDER(Create_func_mbr_intersects)},
   { { STRING_WITH_LEN("ISCLOSED") }, GEOM_BUILDER(Create_func_isclosed)},
   { { STRING_WITH_LEN("ISEMPTY") }, GEOM_BUILDER(Create_func_isempty)},
+  { { STRING_WITH_LEN("ISVALID") }, GEOM_BUILDER(Create_func_isvalid)},
   { { STRING_WITH_LEN("ISRING") }, GEOM_BUILDER(Create_func_isring)},
   { { STRING_WITH_LEN("ISSIMPLE") }, GEOM_BUILDER(Create_func_issimple)},
   { { STRING_WITH_LEN("LINEFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
@@ -4027,6 +4142,7 @@ static Native_func_registry func_array_geom[] =
   { { STRING_WITH_LEN("ST_INTERSECTS") }, GEOM_BUILDER(Create_func_intersects)},
   { { STRING_WITH_LEN("ST_ISCLOSED") }, GEOM_BUILDER(Create_func_isclosed)},
   { { STRING_WITH_LEN("ST_ISEMPTY") }, GEOM_BUILDER(Create_func_isempty)},
+  { { STRING_WITH_LEN("ST_ISVALID") }, GEOM_BUILDER(Create_func_isvalid)},
   { { STRING_WITH_LEN("ST_ISRING") }, GEOM_BUILDER(Create_func_isring)},
   { { STRING_WITH_LEN("ST_ISSIMPLE") }, GEOM_BUILDER(Create_func_issimple)},
   { { STRING_WITH_LEN("ST_LENGTH") }, GEOM_BUILDER(Create_func_glength)},
