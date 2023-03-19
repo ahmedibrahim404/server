@@ -1010,15 +1010,6 @@ public:
   { return get_item_copy<Item_func_isring>(thd, this); }
 };
 
-class Item_func_isvalid: public Item_func_issimple
-{
-public:
-  Item_func_isvalid(THD *thd, Item *a): Item_func_issimple(thd, a) {}
-  longlong val_int();
-  const char *func_name() const { return "st_isvalid"; }
-  Item *get_copy(THD *thd)
-  { return get_item_copy<Item_func_isvalid>(thd, this); }
-};
 
 class Item_func_dimension: public Item_long_func_args_geometry
 {
