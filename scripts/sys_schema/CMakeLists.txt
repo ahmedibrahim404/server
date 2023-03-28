@@ -8,7 +8,6 @@ ${CMAKE_CURRENT_SOURCE_DIR}/triggers/sys_config_insert_set_user.sql
 ${CMAKE_CURRENT_SOURCE_DIR}/triggers/sys_config_update_set_user.sql
 ${CMAKE_CURRENT_SOURCE_DIR}/functions/extract_schema_from_file_name.sql
 ${CMAKE_CURRENT_SOURCE_DIR}/functions/extract_table_from_file_name.sql
-${CMAKE_CURRENT_SOURCE_DIR}/functions/format_bytes.sql
 ${CMAKE_CURRENT_SOURCE_DIR}/functions/format_path_57.sql
 ${CMAKE_CURRENT_SOURCE_DIR}/functions/format_statement.sql
 ${CMAKE_CURRENT_SOURCE_DIR}/functions/format_time.sql
